@@ -5,8 +5,8 @@
   "author": {
     "name": "Lykroze"
   },
-  "homepage": "https://github.com/Lykroze9/DesktopDiag",
-  "repository": "https://github.com/Lykroze9/DesktopDiag",
+  "homepage": "https://github.com/Lykroze9/DesktopDiag-Skill",
+  "repository": "https://github.com/Lykroze9/DesktopDiag-Skill",
   "license": "MIT",
   "keywords": ["windows", "diagnostics", "health-check", "bsod", "gpu", "smart", "troubleshooting", "francais"]
 }
