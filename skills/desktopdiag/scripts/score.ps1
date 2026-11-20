@@ -17,6 +17,9 @@
     fr or en. Default: from the snapshot's UI culture.
 .PARAMETER Now
     Reference date for "last 7 days" windows. Default: the snapshot timestamp.
+.PARAMETER RulesPath
+    rules.json to apply. Default: ..\rules\rules.json next to this script (set it when the script
+    text is run without a file, as the standalone app does).
 .PARAMETER Full
     Include the facts in the output.
 #>
@@ -26,7 +29,8 @@ param(
     [string]$Admin,
     [ValidateSet('', 'fr', 'en')][string]$Lang = '',
     [string]$Now,
-    [switch]$Full
+    [switch]$Full,
+    [string]$RulesPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,7 +45,8 @@ if (-not $Path) {
 }
 $s = Read-Json $Path
 $a = if ($Admin -and (Test-Path -LiteralPath $Admin)) { Read-Json $Admin } else { $null }
-$rules = Read-Json (Join-Path $PSScriptRoot '..\rules\rules.json')
+if (-not $RulesPath) { $RulesPath = Join-Path $PSScriptRoot '..\rules\rules.json' }
+$rules = Read-Json $RulesPath
 
 $ref = if ($Now) { [datetime]$Now } else { [datetime]$s.meta.timestamp }
 if (-not $Lang) { $Lang = if ("$($s.meta.uiCulture)" -like 'fr*') { 'fr' } else { 'en' } }
