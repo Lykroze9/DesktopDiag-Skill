@@ -71,6 +71,18 @@ $frRes = (Invoke-Script 'score.ps1' @('-Path', (Join-Path $work 'disk-full.json'
 $frText = (($frRes.areas | Where-Object { $_.id -eq 'storageSpace' }).findings | Select-Object -First 1).text
 Assert ($frText -match 'Disque') 'French text' "(got $frText)"
 
+# Concrete details (knowledge.json): what exactly was found, not just counts.
+$bs = (Invoke-Script 'score.ps1' @('-Path', (Join-Path $work 'bsod-recent.json'), '-Lang', 'en')) | ConvertFrom-Json
+$bsDet = @(($bs.areas | Where-Object { $_.id -eq 'stability' }).details)
+Assert (($bsDet -join ' ') -match 'SYSTEM_SERVICE_EXCEPTION') 'details: stop code in plain words' "(got $($bsDet -join ' | '))"
+Assert (($bsDet -join ' ') -match 'deep scan') 'details: hint to find the culprit driver' "(got $($bsDet -join ' | '))"
+$gp = (Invoke-Script 'score.ps1' @('-Path', (Join-Path $work 'gpu-tdr.json'), '-Lang', 'fr')) | ConvertFrom-Json
+$gpDet = @(($gp.areas | Where-Object { $_.id -eq 'graphics' }).details)
+Assert (($gpDet -join ' ') -match 'NVIDIA : 3 r') 'details: GPU driver resets with count (fr)' "(got $($gpDet -join ' | '))"
+$kn = [IO.File]::ReadAllText((Join-Path $root 'skills\desktopdiag\rules\knowledge.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+$missing = @($kn.templates.PSObject.Properties | Where-Object { -not $_.Value.fr -or -not $_.Value.en } | ForEach-Object { $_.Name })
+Assert ($missing.Count -eq 0) 'knowledge: every phrase has fr and en' "(missing: $($missing -join ', '))"
+
 Write-Output 'Compare (fixtures)'
 $prev = New-DDSnapshot -At (Get-Date '2026-06-10T12:00:00')
 $cur = New-DDSnapshot -At (Get-Date '2026-06-15T12:00:00')

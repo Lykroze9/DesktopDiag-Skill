@@ -4,6 +4,8 @@ All notable changes to DesktopDiag. Format: newest first. / Les nouveautés de D
 
 ## Unreleased
 
+- **Concrete details**: `score.ps1` now gives, per area, what exactly was found (each crash with its stop code in plain words and the culprit driver from the dump analysis, which GPU driver reset and when, which disk, which programs use memory or start with Windows...) and the known culprits with what to do, from the new `rules/knowledge.json`.
+- `score.ps1 -RulesPath` for hosts that run the script text in-process.
 - The skill now has its own repository (DesktopDiag-Skill). The standalone Windows app lives in [DesktopDiag](https://github.com/Lykroze9/DesktopDiag) and embeds this skill's scripts and rules.
 
 ## 0.3.0 - 2026-11-20

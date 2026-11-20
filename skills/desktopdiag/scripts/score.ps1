@@ -209,13 +209,134 @@ function Format-Text {
     [regex]::Replace($T, '\{(\w+)\}', { param($m) $x = $f[$m.Groups[1].Value]; if ($null -eq $x) { '?' } else { "$x" } })
 }
 
+# ------------------------------------------------------------------ concrete details
+# What exactly was found on this PC, per area (dates, codes, culprit driver, disk, programs...),
+# worded with rules\knowledge.json (phrases, drivers, stop codes) so this script stays ASCII.
+$details = @{}
+$culprits = New-Object System.Collections.Generic.List[object]
+$kFile = Join-Path (Split-Path -Parent $RulesPath) 'knowledge.json'
+$k = if (Test-Path -LiteralPath $kFile) { Read-Json $kFile } else { $null }
+function Add-Detail { param([string]$Area, [string]$Text) if (-not $details.ContainsKey($Area)) { $details[$Area] = New-Object System.Collections.Generic.List[string] }; $details[$Area].Add($Text) }
+function Get-Phrase {
+    param([string]$Key, [hashtable]$V)
+    $tpl = $k.templates.$Key.$Lang
+    [regex]::Replace($tpl, '\{(\w+)\}', { param($m) $x = $V[$m.Groups[1].Value]; if ($null -eq $x) { '' } else { "$x" } }).Replace(' ()', '').Trim()
+}
+function Format-When { param($Iso) if (-not $Iso) { return '?' }; $d = [datetime]$Iso; if ($Lang -eq 'fr') { $d.ToString('dd/MM/yyyy HH:mm') } else { $d.ToString('yyyy-MM-dd HH:mm') } }
+function Format-Num { param($X) $t = "$X"; if ($Lang -eq 'fr') { $t.Replace('.', ',') } else { $t } }
+function Get-StopCode { param([string]$Raw) if ($Raw -match '0x([0-9a-fA-F]+)') { '0x' + ([Convert]::ToInt64($Matches[1], 16)).ToString('x') } else { $null } }
+
+if ($k) {
+    # Stability: each crash of the last 30 days, its stop code in plain words, and the culprit
+    # driver when the admin dump analysis found one for that crash.
+    $limit = $ref.AddDays(-30)
+    $dumps = if ($a -and $a.dumpAnalysis -and $a.dumpAnalysis.results) { @($a.dumpAnalysis.results) } else { @() }
+    $events = @()
+    foreach ($b in @($s.stability.bugchecks | Where-Object { $_ -and $_.time })) {
+        $events += [pscustomobject]@{ time = [datetime]$b.time; code = (Get-StopCode "$($b.bugcheck)"); bsod = $true }
+    }
+    foreach ($u in @($s.stability.unexpectedShutdowns | Where-Object { $_ -and $_.time })) {
+        $t = [datetime]$u.time
+        if (-not ($events | Where-Object { [math]::Abs(($_.time - $t).TotalMinutes) -lt 15 })) {
+            $code = Get-StopCode "$($u.bugcheckCode)"
+            $events += [pscustomobject]@{ time = $t; code = $code; bsod = ($code -and $code -ne '0x0') }
+        }
+    }
+    $needDump = $false
+    foreach ($e in @($events | Where-Object { $_.time -ge $limit } | Sort-Object time -Descending | Select-Object -First 5)) {
+        $sc = if ($e.code) { $k.stopCodes."$($e.code)" } else { $null }
+        if (-not $e.bsod) { Add-Detail 'stability' (Get-Phrase 'crashOff' @{ date = (Format-When $e.time); meaning = $k.stopCodes.'0x0'.$Lang }); continue }
+        Add-Detail 'stability' (Get-Phrase 'crashBsod' @{ date = (Format-When $e.time); code = $e.code; name = $(if ($sc) { $sc.name }); meaning = $(if ($sc) { $sc.$Lang }) })
+        $dump = @($dumps | Where-Object { $_.date -and [math]::Abs(([datetime]$_.date - $e.time).TotalMinutes) -lt 15 }) | Select-Object -First 1
+        $file = if ($dump) { @($dump.imageName, $dump.moduleName) | Where-Object { $_ } | Select-Object -First 1 } else { $null }
+        if ($file) {
+            $kd = $k.drivers."$($file.ToLower())"
+            Add-Detail 'stability' (Get-Phrase 'crashCulprit' @{ file = $file; product = $(if ($kd) { $kd.product } else { '?' }) })
+            if ($kd -and -not ($culprits | Where-Object { $_.file -eq $file })) { $culprits.Add([ordered]@{ area = 'stability'; file = $file; product = $kd.product; advice = $kd.$Lang }) }
+        } elseif (-not $dumps.Count) { $needDump = $true }
+    }
+    if ($needDump) { Add-Detail 'stability' (Get-Phrase 'crashNoDump' @{}) }
+    foreach ($c in @($s.appCrashes.crashes | Where-Object { $_ } | Sort-Object { [int]$_.count } -Descending | Select-Object -First 3)) {
+        Add-Detail 'stability' (Get-Phrase 'appCrash' @{ app = ("$($c.key)" -replace '\s*\[.*$', ''); count = $c.count; date = (Format-When $c.last) })
+    }
+
+    # Graphics: which driver, how many resets/errors and when; the card and its driver; OC tools.
+    $vendors = @{ nvlddmkm = 'NVIDIA'; amdkmdag = 'AMD'; atikmdag = 'AMD'; amdwddmg = 'AMD'; igfx = 'Intel'; igfxn = 'Intel' }
+    foreach ($g in @($s.gpuEvents | Where-Object { $_ })) {
+        $parts = "$($g.key)" -split '/'
+        $kind = if ($parts.Count -gt 1 -and $parts[1] -in '153', '4101') { 'gpuReset' } else { 'gpuError' }
+        $vendor = if ($vendors.ContainsKey($parts[0])) { $vendors[$parts[0]] } else { $parts[0] }
+        Add-Detail 'graphics' (Get-Phrase $kind @{ vendor = $vendor; count = $g.count; first = (Format-When $g.first); last = (Format-When $g.last) })
+    }
+    foreach ($c in @($s.hardware.gpus | Where-Object { $_ })) {
+        $ver = if ($c.nvidiaVersion) { $c.nvidiaVersion } else { $c.driverVersion }
+        Add-Detail 'graphics' (Get-Phrase 'gpuCard' @{ name = $c.name; version = $ver; date = $(if ($c.driverDate) { ([datetime]$c.driverDate).ToString($(if ($Lang -eq 'fr') { 'dd/MM/yyyy' } else { 'yyyy-MM-dd' })) } else { '?' }) })
+    }
+    $oc = @($s.maintenance.startup | Where-Object { $_ -and "$($_.name) $($_.command)" -match 'Afterburner|RTSS|RivaTuner|Ryzen ?Master|Precision ?X|GPU ?Tweak|ThrottleStop|XTU' } | ForEach-Object { $_.name })
+    if ($oc.Count) { Add-Detail 'graphics' (Get-Phrase 'ocTools' @{ list = ($oc -join ', ') }) }
+
+    # Disks: which physical disk the errors are on (number -> model and bus: USB or internal).
+    foreach ($g in @($s.diskEvents | Where-Object { $_ })) {
+        if ("$($g.key)" -match 'Harddisk(\d+)\\') {
+            $n = $Matches[1]
+            $pd = @($s.storage.physicalDisks | Where-Object { "$($_.number)" -eq $n }) | Select-Object -First 1
+            Add-Detail 'diskHealth' (Get-Phrase 'diskEvent' @{ count = $g.count; kind = $($id = ("$($g.key)" -split ' ')[0].ToLower(); $de = $k.diskEvents.$id; if ($de) { $de.$Lang } else { $id }); n = $n; disk = $(if ($pd) { $pd.name } else { '?' }); bus = $(if ($pd) { $pd.bus }); last = (Format-When $g.last) })
+        }
+    }
+
+    # Space: every fixed volume, plus temp and hibernation files.
+    foreach ($v in @($s.storage.volumes | Where-Object { $_ -and $_.type -eq 'fixed' })) {
+        Add-Detail 'storageSpace' (Get-Phrase 'volume' @{ drive = $v.drive; free = (Format-Num $v.freeGB); size = (Format-Num $v.sizeGB); pct = (Format-Num $v.freePct) })
+    }
+    $temp = [math]::Round([double]$s.maintenance.userTempGB + [double]$s.maintenance.windowsTempGB, 1)
+    $hiber = if ($s.maintenance.hibernation) { [double]$s.maintenance.hibernation.hiberfilGB } else { 0 }
+    if ($temp -ge 1) { Add-Detail 'storageSpace' (Get-Phrase 'tempFiles' @{ temp = (Format-Num $temp) }) }
+    if ($hiber -ge 1) { Add-Detail 'storageSpace' (Get-Phrase 'hiberFile' @{ hiber = (Format-Num $hiber) }) }
+
+    # Performance: who used the memory and the processor during the check.
+    $tm = @($s.load.topMemory | Where-Object { $_ } | Select-Object -First 4 | ForEach-Object { '{0} ({1} {2})' -f $_.name, (Format-Num ([math]::Round([double]$_.memMB / 1024, 1))), $(if ($Lang -eq 'fr') { 'Go' } else { 'GB' }) })
+    if ($tm.Count) { Add-Detail 'performance' (Get-Phrase 'topMem' @{ list = ($tm -join ', ') }) }
+    $tc = @($s.load.topCpu | Where-Object { $_ -and [double]$_.cpuPct -ge 5 } | Select-Object -First 3 | ForEach-Object { '{0} ({1} %)' -f $_.name, (Format-Num $_.cpuPct) })
+    if ($tc.Count) { Add-Detail 'performance' (Get-Phrase 'topCpu' @{ list = ($tc -join ', ') }) }
+
+    # Maintenance: startup programs (and which ones are safe to turn off), uptime.
+    $st = @($s.maintenance.startup | Where-Object { $_ } | ForEach-Object { "$($_.name)" -replace ' - (Raccourci|Shortcut)$', '' } | Where-Object { $_ -notmatch '^MicrosoftEdgeAutoLaunch_' })
+    if ($s.maintenance.startup | Where-Object { "$($_.name)" -match '^MicrosoftEdgeAutoLaunch_' }) { $st += 'Microsoft Edge' }
+    if ($st.Count) {
+        Add-Detail 'maintenance' (Get-Phrase 'startupList' @{ count = $st.Count; list = (($st | Select-Object -First 12) -join ', ') })
+        $safe = @($st | Where-Object { $n = ($_.ToLower() -replace '[^a-z0-9.]', ''); @($k.startupSafe | Where-Object { $n -like "*$_*" }).Count -gt 0 })
+        if ($safe.Count) { Add-Detail 'maintenance' (Get-Phrase 'startupSafe' @{ list = ($safe -join ', ') }) }
+    }
+    if ($s.system.uptimeDays -ge 7) { Add-Detail 'maintenance' (Get-Phrase 'uptime' @{ days = [math]::Floor([double]$s.system.uptimeDays) }) }
+
+    # Hardware: devices in error with their code in plain words, WHEA errors.
+    foreach ($d in @($s.problemDevices | Where-Object { $_ } | Select-Object -First 6)) {
+        $m = $k.deviceCodes."$($d.errorCode)"
+        Add-Detail 'hardwareErrors' (Get-Phrase 'device' @{ name = $d.name; code = $d.errorCode; meaning = $(if ($m) { $m.$Lang }) })
+    }
+    foreach ($g in @($s.hardwareErrors | Where-Object { $_ })) {
+        Add-Detail 'hardwareErrors' (Get-Phrase 'whea' @{ count = $g.count; kind = ("$($g.key)" -replace '^WHEA/', '#'); last = (Format-When $g.last) })
+    }
+
+    # Security: which updates failed. Network: drops. Heat: throttling.
+    $wuf = @($s.security.windowsUpdate.recentFailures | Where-Object { $_ } | Select-Object -First 3 | ForEach-Object { ("$($_.title) $($_.hresult)").Trim() })
+    if ($wuf.Count) { Add-Detail 'security' (Get-Phrase 'wuFail' @{ list = ($wuf -join ' ; ') }) }
+    $drops = @($s.networkHealth.disconnects | Where-Object { $_ })
+    if ($drops.Count) {
+        $last = ($drops | ForEach-Object { $_.last } | Where-Object { $_ } | Sort-Object -Descending | Select-Object -First 1)
+        Add-Detail 'network' (Get-Phrase 'netDrops' @{ count = (Get-Sum $drops); last = (Format-When $last) })
+    }
+    $thr = @($s.thermal.cpuThrottleEvents | Where-Object { $_ })
+    if ($thr.Count) { Add-Detail 'heat' (Get-Phrase 'throttle' @{ count = (Get-Sum $thr); last = (Format-When ($thr | Select-Object -First 1).last) }) }
+}
+
 $rank = @{ green = 0; yellow = 1; red = 2 }
 $areas = @()
 $yellow = 0; $red = 0
 foreach ($area in $rules.areas) {
     $label = $area.label.$Lang
     if ($area.PSObject.Properties.Name -contains 'appliesWhen' -and -not (Test-Condition $area.appliesWhen)) {
-        $areas += [ordered]@{ id = $area.id; label = $label; level = 'skipped'; findings = @() }
+        $areas += [ordered]@{ id = $area.id; label = $label; level = 'skipped'; findings = @(); details = @(); culprits = @() }
         continue
     }
     $findings = @(foreach ($r in $area.rules) {
@@ -226,7 +347,9 @@ foreach ($area in $rules.areas) {
     # Keep only the most severe finding per area level family (red ones, else yellow ones).
     $shown = @($findings | Where-Object { $_.level -eq $level })
     if ($level -eq 'yellow') { $yellow++ } elseif ($level -eq 'red') { $red++ }
-    $areas += [ordered]@{ id = $area.id; label = $label; level = $level; findings = $shown }
+    $areas += [ordered]@{ id = $area.id; label = $label; level = $level; findings = $shown
+        details = @(if ($details.ContainsKey($area.id)) { $details[$area.id] })
+        culprits = @($culprits | Where-Object { $_.area -eq $area.id }) }
 }
 $sc = $rules.scoring
 $score = [math]::Max([int]$sc.min, [int]$sc.start - [int]$sc.yellow * $yellow - [int]$sc.red * $red)

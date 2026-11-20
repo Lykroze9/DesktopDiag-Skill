@@ -74,7 +74,7 @@ It applies `rules/rules.json` to the newest snapshot and prints the score, each 
 (green / yellow / red / skipped) and the findings that set it, in the snapshot's language
 (`-Lang fr|en` to force). After the admin step, run it again with `-Admin <admin json>` (SMART and
 boot time can change disk health and boot levels). **Use this score and these levels as they are**
-so the same PC always gets the same score. You add the explanations, the context (e.g. a red that
+so the same PC always gets the same score. Each area also carries `details` (what exactly was found: crash dates and stop codes in plain words, the culprit driver when the admin dump analysis found one, which disk, which programs...) and `culprits` (known driver -> software and what to do, from `rules/knowledge.json`): quote them so the user knows concretely what is wrong. You add the explanations, the context (e.g. a red that
 comes from an old cause already fixed: say so in the text) and the recommendations. If you think a
 level is wrong, keep it and say why in one line; the rule can be fixed later. `-Full` adds the
 computed facts if you need to see why a rule fired.

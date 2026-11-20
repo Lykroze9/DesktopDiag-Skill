@@ -71,3 +71,7 @@ facts with the same definitions. "Reference date" = the snapshot timestamp.
 
 Tests: `tests/run-tests.ps1` runs every fixture in `tests/fixtures.ps1` through the rules. Add a
 fixture with each new rule.
+
+## knowledge.json
+
+Plain-language knowledge used by `score.ps1` to word the per-area `details` and `culprits`: phrase templates (FR/EN), drivers often seen in blue screens (software behind them and what to do), stop codes, device error codes, disk event ids and startup programs that are safe to turn off. Keep every template in both languages (a test checks it).
